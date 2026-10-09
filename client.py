@@ -2,7 +2,7 @@
 import socket
 import json
 import threading
-import pygame
+import arcade
 import random
 import math
 from enum import Enum
@@ -16,90 +16,160 @@ class GameState(Enum):
     GAME_OVER = 6
 
 class Player:
-    def __init__(self, x, y):
+    def __init__(self, x, y, z):
         self.x = x
         self.y = y
+        self.z = z
         self.width = 20
-        self.height = 30
+        self.height = 40  # Full body height
+        self.depth = 15
         self.speed = 5
         self.score = 0
         self.kills = 0
         self.shots_fired = 0
         self.shots_hit = 0
         self.health = 100
-        self.angle = 0
+        self.pitch = 0  # Head angle up/down
+        self.yaw = 0    # Head angle left/right
+        self.head_height = 35  # Head level from ground
 
     def update(self, keys):
-        if keys[pygame.K_w]:
-            self.y -= self.speed
-        if keys[pygame.K_s]:
-            self.y += self.speed
-        if keys[pygame.K_a]:
+        if keys[arcade.key.W]:
+            self.z -= self.speed
+        if keys[arcade.key.S]:
+            self.z += self.speed
+        if keys[arcade.key.A]:
             self.x -= self.speed
-        if keys[pygame.K_d]:
+        if keys[arcade.key.D]:
             self.x += self.speed
+        if keys[arcade.key.SPACE]:
+            self.y = min(self.y + self.speed, 20)  # Jump
+        else:
+            self.y = max(self.y - self.speed * 0.5, 0)  # Fall
 
-    def draw(self, surface, color=(0, 255, 0)):
-        pygame.draw.rect(surface, color, (self.x, self.y, self.width, self.height))
-        # Draw direction indicator
-        end_x = self.x + 10 + 20 * math.cos(math.radians(self.angle))
-        end_y = self.y + 15 + 20 * math.sin(math.radians(self.angle))
-        pygame.draw.line(surface, (255, 255, 0), (self.x + 10, self.y + 15), (end_x, end_y), 2)
+    def draw_3d_projection(self, surface, width, height, camera_distance=50):
+        """Draw stick figure in 3D perspective"""
+        # Project 3D position to 2D screen
+        scale = camera_distance / (self.z + camera_distance)
+        screen_x = width // 2 + (self.x - width // 2) * scale
+        screen_y = height // 2 + (self.y - height // 2) * scale
+        
+        # Draw stick figure
+        # Head
+        head_radius = int(8 * scale)
+        arcade.draw_circle_filled(screen_x, screen_y + int(30 * scale), head_radius, arcade.GREEN)
+        
+        # Body
+        body_y = screen_y + int(10 * scale)
+        arcade.draw_line(screen_x, screen_y + int(28 * scale), screen_x, body_y, arcade.GREEN, 2)
+        
+        # Left arm
+        arcade.draw_line(screen_x, body_y, screen_x - int(10 * scale), body_y + int(5 * scale), arcade.GREEN, 2)
+        # Right arm
+        arcade.draw_line(screen_x, body_y, screen_x + int(10 * scale), body_y + int(5 * scale), arcade.GREEN, 2)
+        
+        # Left leg
+        arcade.draw_line(screen_x, body_y, screen_x - int(5 * scale), body_y - int(15 * scale), arcade.GREEN, 2)
+        # Right leg
+        arcade.draw_line(screen_x, body_y, screen_x + int(5 * scale), body_y - int(15 * scale), arcade.GREEN, 2)
 
-class Target:
-    def __init__(self, x, y, radius=15):
+class StickFigureTarget:
+    def __init__(self, x, y, z):
         self.x = x
         self.y = y
-        self.radius = radius
+        self.z = z
+        self.vx = random.uniform(-1, 1)
+        self.vy = 0
+        self.vz = random.uniform(-1, 1)
         self.health = 100
-        self.speed = random.randint(1, 3)
-        self.angle = random.uniform(0, 360)
+        self.scale = 1.0
 
-    def update(self):
-        self.x += self.speed * math.cos(math.radians(self.angle))
-        self.y += self.speed * math.sin(math.radians(self.angle))
+    def update(self, arena_width, arena_height, arena_depth):
+        self.x += self.vx
+        self.y += self.vy
+        self.z += self.vz
+        
+        # Gravity
+        if self.y > 0:
+            self.vy -= 0.2
+        else:
+            self.y = 0
+            self.vy = random.uniform(0.5, 2)  # Bounce
         
         # Bounce off walls
-        if self.x - self.radius < 0 or self.x + self.radius > 800:
-            self.angle = 180 - self.angle
-        if self.y - self.radius < 0 or self.y + self.radius > 600:
-            self.angle = -self.angle
+        if self.x <= 0 or self.x >= arena_width:
+            self.vx *= -1
+        if self.z <= 0 or self.z >= arena_depth:
+            self.vz *= -1
         
-        self.x = max(self.radius, min(800 - self.radius, self.x))
-        self.y = max(self.radius, min(600 - self.radius, self.y))
+        self.x = max(0, min(arena_width, self.x))
+        self.z = max(0, min(arena_depth, self.z))
 
-    def draw(self, surface, color=(255, 0, 0)):
-        pygame.draw.circle(surface, color, (int(self.x), int(self.y)), self.radius)
-        pygame.draw.circle(surface, (255, 255, 255), (int(self.x), int(self.y)), self.radius, 2)
+    def draw_3d_projection(self, screen_width, screen_height, player_z, camera_distance=50):
+        """Draw stick figure target in 3D perspective"""
+        # Distance from camera (player)
+        depth_diff = self.z - player_z + camera_distance
+        if depth_diff <= 0:
+            return  # Behind camera
+        
+        scale = camera_distance / depth_diff
+        screen_x = screen_width // 2 + (self.x - screen_width // 2) * scale
+        screen_y = screen_height // 2 - (self.y - screen_height // 2) * scale
+        
+        # Draw stick figure enemy
+        # Head
+        head_radius = int(6 * scale)
+        arcade.draw_circle_filled(screen_x, screen_y + int(25 * scale), head_radius, arcade.RED)
+        
+        # Body
+        body_y = screen_y + int(8 * scale)
+        arcade.draw_line(screen_x, screen_y + int(23 * scale), screen_x, body_y, arcade.RED, 2)
+        
+        # Left arm
+        arcade.draw_line(screen_x, body_y, screen_x - int(8 * scale), body_y + int(4 * scale), arcade.RED, 2)
+        # Right arm
+        arcade.draw_line(screen_x, body_y, screen_x + int(8 * scale), body_y + int(4 * scale), arcade.RED, 2)
+        
+        # Left leg
+        arcade.draw_line(screen_x, body_y, screen_x - int(4 * scale), body_y - int(12 * scale), arcade.RED, 2)
+        # Right leg
+        arcade.draw_line(screen_x, body_y, screen_x + int(4 * scale), body_y - int(12 * scale), arcade.RED, 2)
+        
+        # Health bar
+        bar_width = 20 * scale
+        bar_height = 3
+        arcade.draw_rectangle_outline(screen_x, screen_y + int(32 * scale), bar_width, bar_height, arcade.WHITE)
+        arcade.draw_rectangle_filled(screen_x, screen_y + int(32 * scale), bar_width * (self.health / 100), bar_height, arcade.GREEN)
 
 class Bullet:
-    def __init__(self, x, y, angle):
+    def __init__(self, x, y, z, pitch, yaw, speed=15):
         self.x = x
         self.y = y
-        self.angle = angle
-        self.speed = 8
-        self.lifetime = 300  # frames
-        self.radius = 3
+        self.z = z
+        self.pitch = pitch
+        self.yaw = yaw
+        self.speed = speed
+        self.lifetime = 300
+        self.radius = 2
 
     def update(self):
-        self.x += self.speed * math.cos(math.radians(self.angle))
-        self.y += self.speed * math.sin(math.radians(self.angle))
+        # Convert pitch/yaw to direction
+        dx = self.speed * math.cos(math.radians(self.pitch)) * math.sin(math.radians(self.yaw))
+        dy = self.speed * math.sin(math.radians(self.pitch))
+        dz = self.speed * math.cos(math.radians(self.pitch)) * math.cos(math.radians(self.yaw))
+        
+        self.x += dx
+        self.y += dy
+        self.z += dz
         self.lifetime -= 1
         return self.lifetime > 0
 
-    def draw(self, surface, color=(255, 255, 0)):
-        pygame.draw.circle(surface, color, (int(self.x), int(self.y)), self.radius)
+    def distance_to(self, target):
+        return math.sqrt((self.x - target.x)**2 + (self.y - target.y)**2 + (self.z - target.z)**2)
 
-class GameClient:
+class GameClient(arcade.Window):
     def __init__(self, server_ip='localhost', server_port=5000):
-        pygame.init()
-        self.width = 800
-        self.height = 600
-        self.screen = pygame.display.set_mode((self.width, self.height))
-        pygame.display.set_caption("Target Practice - LAN Game")
-        self.clock = pygame.time.Clock()
-        self.font = pygame.font.Font(None, 36)
-        self.small_font = pygame.font.Font(None, 24)
+        super().__init__(1200, 800, "Target Practice - 3D Arena")
         
         self.socket = None
         self.server_ip = server_ip
@@ -111,7 +181,12 @@ class GameClient:
         self.leaderboard = []
         self.remote_players = {}
         
-        self.player = Player(self.width // 2, self.height // 2)
+        # 3D Arena dimensions
+        self.arena_width = 200
+        self.arena_height = 100
+        self.arena_depth = 200
+        
+        self.player = Player(self.arena_width // 2, 5, self.arena_depth // 2)
         self.targets = []
         self.bullets = []
         self.game_active = False
@@ -120,6 +195,13 @@ class GameClient:
         
         self.input_name = ""
         self.input_server_ip = server_ip
+        self.input_mode = "ip"  # Current input field
+        
+        # Mouse tracking for aiming
+        self.mouse_x = 0
+        self.mouse_y = 0
+        
+        arcade.set_background_color(arcade.DARK_SLATE_GRAY)
 
     def connect_to_server(self):
         try:
@@ -175,7 +257,7 @@ class GameClient:
             self.remote_players = players
             
         elif msg_type == 'score_update':
-            pass  # Update remote player score if needed
+            pass
             
         elif msg_type == 'map_changed':
             self.current_map = message.get('map')
@@ -190,9 +272,10 @@ class GameClient:
     def spawn_targets(self, count=5):
         self.targets = []
         for _ in range(count):
-            x = random.randint(50, self.width - 50)
-            y = random.randint(50, self.height - 50)
-            self.targets.append(Target(x, y))
+            x = random.randint(20, self.arena_width - 20)
+            y = random.randint(5, 30)
+            z = random.randint(20, self.arena_depth - 20)
+            self.targets.append(StickFigureTarget(x, y, z))
 
     def start_game(self):
         self.game_state = GameState.PLAYING
@@ -209,110 +292,167 @@ class GameClient:
             'player_name': self.input_name or 'Player'
         })
 
+    def draw_3d_arena(self):
+        """Draw the 3D arena wireframe"""
+        screen_width = self.width
+        screen_height = self.height
+        camera_distance = 80
+        player_z = self.player.z
+        
+        # Draw floor grid
+        grid_size = 20
+        for x in range(0, self.arena_width, grid_size):
+            for z in range(0, self.arena_depth, grid_size):
+                # Project to 2D
+                scale = camera_distance / (z - player_z + camera_distance)
+                if scale > 0:
+                    x1 = screen_width // 2 + (x - screen_width // 2) * scale
+                    y1 = screen_height // 2
+                    x2 = screen_width // 2 + ((x + grid_size) - screen_width // 2) * scale
+                    z_next_scale = camera_distance / ((z + grid_size) - player_z + camera_distance)
+                    y2 = screen_height // 2 - grid_size * z_next_scale
+                    
+                    if 0 <= x1 < screen_width and 0 <= x2 < screen_width:
+                        arcade.draw_line(int(x1), int(y1), int(x2), int(y1), arcade.DARK_CYAN, 1)
+        
+        # Draw depth lines
+        for z in range(0, self.arena_depth, grid_size):
+            scale = camera_distance / (z - player_z + camera_distance)
+            if scale > 0:
+                x_left = screen_width // 2 - screen_width // 4 * scale
+                y = screen_height // 2
+                x_right = screen_width // 2 + screen_width // 4 * scale
+                if 0 <= y < screen_height:
+                    arcade.draw_line(int(x_left), int(y), int(x_right), int(y), arcade.DARK_CYAN, 1)
+
+    def draw_crosshair(self):
+        """Draw centered crosshair"""
+        center_x = self.width // 2
+        center_y = self.height // 2
+        crosshair_size = 15
+        thickness = 2
+        
+        # Vertical line
+        arcade.draw_line(center_x, center_y - crosshair_size, center_x, center_y + crosshair_size, 
+                        arcade.GREEN, thickness)
+        # Horizontal line
+        arcade.draw_line(center_x - crosshair_size, center_y, center_x + crosshair_size, center_y, 
+                        arcade.GREEN, thickness)
+        # Center dot
+        arcade.draw_circle_filled(center_x, center_y, 2, arcade.GREEN)
+
+    def on_draw(self):
+        arcade.start_render()
+        
+        if self.game_state == GameState.MENU:
+            self.draw_menu()
+        elif self.game_state == GameState.PLAYING:
+            self.draw_game()
+        elif self.game_state == GameState.LEADERBOARD:
+            self.draw_leaderboard()
+        elif self.game_state == GameState.GAME_OVER:
+            self.draw_game_over()
+
     def draw_menu(self):
-        self.screen.fill((20, 20, 20))
+        arcade.draw_rectangle_filled(self.width // 2, self.height // 2, self.width, self.height, 
+                                     arcade.BLACK)
         
-        title = self.font.render("TARGET PRACTICE", True, (0, 255, 0))
-        self.screen.blit(title, (self.width // 2 - title.get_width() // 2, 50))
+        arcade.draw_text("TARGET PRACTICE - 3D ARENA", 
+                        self.width // 2, self.height - 100,
+                        20, arcade.GREEN, anchor_x="center", bold=True)
         
-        # Input fields
-        ip_label = self.small_font.render("Server IP:", True, (255, 255, 255))
-        self.screen.blit(ip_label, (150, 150))
-        ip_input = self.small_font.render(self.input_server_ip, True, (0, 255, 0))
-        self.screen.blit(ip_input, (150, 180))
+        arcade.draw_text("Server IP:", 100, self.height - 200, 14, arcade.WHITE)
+        arcade.draw_text(self.input_server_ip, 100, self.height - 230, 14, arcade.GREEN)
         
-        name_label = self.small_font.render("Player Name:", True, (255, 255, 255))
-        self.screen.blit(name_label, (150, 250))
-        name_input = self.small_font.render(self.input_name or "Enter name...", True, (0, 255, 0))
-        self.screen.blit(name_input, (150, 280))
+        arcade.draw_text("Player Name:", 100, self.height - 300, 14, arcade.WHITE)
+        arcade.draw_text(self.input_name or "Enter name...", 100, self.height - 330, 14, arcade.GREEN)
         
-        instructions = self.small_font.render("WASD: Move | Mouse: Aim | Click: Shoot", True, (200, 200, 200))
-        self.screen.blit(instructions, (self.width // 2 - instructions.get_width() // 2, 400))
-        
-        connect_text = self.font.render("Press ENTER to Connect & Play", True, (0, 255, 0))
-        self.screen.blit(connect_text, (self.width // 2 - connect_text.get_width() // 2, 480))
-        
-        leaderboard_text = self.small_font.render("Press L to view Leaderboard", True, (100, 100, 255))
-        self.screen.blit(leaderboard_text, (self.width // 2 - leaderboard_text.get_width() // 2, 520))
+        arcade.draw_text("Controls:", self.width // 2, 250, 14, arcade.YELLOW, anchor_x="center")
+        arcade.draw_text("WASD: Move | Mouse: Aim | Click: Shoot | SPACE: Jump", 
+                        self.width // 2, 220, 12, arcade.LIGHT_GRAY, anchor_x="center")
+        arcade.draw_text("Press ENTER to Connect & Play", 
+                        self.width // 2, 100, 14, arcade.GREEN, anchor_x="center")
+        arcade.draw_text("Press L to view Leaderboard", 
+                        self.width // 2, 50, 12, arcade.LIGHT_BLUE, anchor_x="center")
 
     def draw_game(self):
-        # Map background
+        # Draw 3D arena background
         map_colors = {
-            'forest': (34, 139, 34),
-            'urban': (100, 100, 100),
-            'desert': (210, 180, 140),
-            'arctic': (240, 248, 255)
+            'forest': (34, 89, 34),
+            'urban': (80, 80, 80),
+            'desert': (180, 160, 100),
+            'arctic': (200, 220, 240)
         }
-        self.screen.fill(map_colors.get(self.current_map, (0, 0, 0)))
+        bg_color = map_colors.get(self.current_map, (40, 40, 40))
+        arcade.draw_rectangle_filled(self.width // 2, self.height // 2, self.width, self.height, bg_color)
         
-        # Draw grid
-        for x in range(0, self.width, 50):
-            pygame.draw.line(self.screen, (50, 50, 50), (x, 0), (x, self.height), 1)
-        for y in range(0, self.height, 50):
-            pygame.draw.line(self.screen, (50, 50, 50), (0, y), (self.width, y), 1)
+        # Draw arena grid
+        self.draw_3d_arena()
         
         # Draw targets
         for target in self.targets:
-            target.draw(self.screen)
+            target.draw_3d_projection(self.width, self.height, self.player.z)
         
-        # Draw player
-        self.player.draw(self.screen)
-        
-        # Draw bullets
+        # Draw bullets (small dots)
         for bullet in self.bullets:
-            bullet.draw(self.screen)
+            scale = 80 / (bullet.z - self.player.z + 80) if bullet.z > self.player.z else 0.1
+            screen_x = self.width // 2 + (bullet.x - self.width // 2) * scale
+            screen_y = self.height // 2 - (bullet.y - self.height // 2) * scale
+            if 0 <= screen_x < self.width and 0 <= screen_y < self.height:
+                arcade.draw_circle_filled(int(screen_x), int(screen_y), 3, arcade.YELLOW)
+        
+        # Draw crosshair
+        self.draw_crosshair()
         
         # Draw HUD
         time_left = max(0, self.game_duration - self.game_time // 60)
-        time_text = self.small_font.render(f"Time: {time_left}s", True, (255, 255, 255))
-        score_text = self.small_font.render(f"Score: {self.player.score}", True, (0, 255, 0))
-        kills_text = self.small_font.render(f"Kills: {self.player.kills}", True, (255, 100, 0))
-        accuracy = (self.player.shots_hit / max(1, self.player.shots_fired)) * 100
-        accuracy_text = self.small_font.render(f"Accuracy: {accuracy:.1f}%", True, (100, 200, 255))
-        map_text = self.small_font.render(f"Map: {self.current_map.capitalize()}", True, (200, 200, 200))
+        arcade.draw_text(f"Time: {time_left}s", 10, self.height - 30, 14, arcade.WHITE)
+        arcade.draw_text(f"Score: {self.player.score}", 10, self.height - 60, 14, arcade.GREEN)
+        arcade.draw_text(f"Kills: {self.player.kills}", 10, self.height - 90, 14, arcade.YELLOW)
         
-        self.screen.blit(time_text, (10, 10))
-        self.screen.blit(score_text, (10, 40))
-        self.screen.blit(kills_text, (10, 70))
-        self.screen.blit(accuracy_text, (10, 100))
-        self.screen.blit(map_text, (self.width - 200, 10))
+        accuracy = (self.player.shots_hit / max(1, self.player.shots_fired)) * 100
+        arcade.draw_text(f"Accuracy: {accuracy:.1f}%", 10, self.height - 120, 14, arcade.LIGHT_BLUE)
+        arcade.draw_text(f"Map: {self.current_map.capitalize()}", 
+                        self.width - 200, self.height - 30, 14, arcade.LIGHT_GRAY)
+        
+        # Player position indicator
+        arcade.draw_text(f"Pos: ({int(self.player.x)}, {int(self.player.z)})", 
+                        10, 10, 12, arcade.LIGHT_GRAY)
 
     def draw_leaderboard(self):
-        self.screen.fill((20, 20, 20))
+        arcade.draw_rectangle_filled(self.width // 2, self.height // 2, self.width, self.height, 
+                                     arcade.BLACK)
         
-        title = self.font.render("LEADERBOARD", True, (0, 255, 0))
-        self.screen.blit(title, (self.width // 2 - title.get_width() // 2, 20))
+        arcade.draw_text("LEADERBOARD", self.width // 2, self.height - 50, 
+                        20, arcade.GREEN, anchor_x="center", bold=True)
         
-        y_offset = 70
+        y_offset = self.height - 120
         for i, entry in enumerate(self.leaderboard[:10]):
-            rank = f"#{i+1}"
             name = entry.get('player_name', 'Unknown')
             score = entry.get('score', 0)
-            text = f"{rank} {name}: {score}"
-            text_surface = self.small_font.render(text, True, (100 + i*15, 255 - i*15, 100))
-            self.screen.blit(text_surface, (50, y_offset))
-            y_offset += 40
+            text = f"#{i+1} {name}: {score}"
+            color = (100 + i*15, 255 - i*15, 100)
+            arcade.draw_text(text, 50, y_offset, 14, color)
+            y_offset -= 50
         
-        back_text = self.small_font.render("Press MENU to go back", True, (200, 200, 200))
-        self.screen.blit(back_text, (self.width // 2 - back_text.get_width() // 2, 550))
+        arcade.draw_text("Press MENU/M to go back", self.width // 2, 50, 12, 
+                        arcade.LIGHT_GRAY, anchor_x="center")
 
     def draw_game_over(self):
-        self.screen.fill((20, 20, 20))
+        arcade.draw_rectangle_filled(self.width // 2, self.height // 2, self.width, self.height, 
+                                     arcade.BLACK)
         
-        title = self.font.render("GAME OVER", True, (255, 0, 0))
-        self.screen.blit(title, (self.width // 2 - title.get_width() // 2, 100))
-        
-        final_score = self.font.render(f"Final Score: {self.player.score}", True, (0, 255, 0))
-        self.screen.blit(final_score, (self.width // 2 - final_score.get_width() // 2, 200))
-        
-        kills_text = self.small_font.render(f"Targets Destroyed: {self.player.kills}", True, (255, 200, 0))
-        self.screen.blit(kills_text, (self.width // 2 - kills_text.get_width() // 2, 280))
+        arcade.draw_text("GAME OVER", self.width // 2, self.height - 100, 
+                        20, arcade.RED, anchor_x="center", bold=True)
+        arcade.draw_text(f"Final Score: {self.player.score}", self.width // 2, self.height - 180, 
+                        18, arcade.GREEN, anchor_x="center")
+        arcade.draw_text(f"Targets Destroyed: {self.player.kills}", self.width // 2, self.height - 240, 
+                        14, arcade.YELLOW, anchor_x="center")
         
         accuracy = (self.player.shots_hit / max(1, self.player.shots_fired)) * 100
-        accuracy_text = self.small_font.render(f"Accuracy: {accuracy:.1f}%", True, (100, 200, 255))
-        self.screen.blit(accuracy_text, (self.width // 2 - accuracy_text.get_width() // 2, 320))
+        arcade.draw_text(f"Accuracy: {accuracy:.1f}%", self.width // 2, self.height - 290, 
+                        14, arcade.LIGHT_BLUE, anchor_x="center")
         
-        # Send final score to server
         self.send_message({
             'type': 'end_game',
             'player_id': self.player_id,
@@ -320,132 +460,134 @@ class GameClient:
             'player_name': self.input_name or 'Player'
         })
         
-        restart_text = self.small_font.render("Press ENTER to return to menu", True, (200, 200, 200))
-        self.screen.blit(restart_text, (self.width // 2 - restart_text.get_width() // 2, 450))
+        arcade.draw_text("Press ENTER to return to menu", self.width // 2, 100, 14, 
+                        arcade.LIGHT_GRAY, anchor_x="center")
 
-    def update(self, events):
+    def on_key_press(self, key, modifiers):
         if self.game_state == GameState.MENU:
-            for event in events:
-                if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_RETURN:
-                        if self.connect_to_server():
-                            self.start_game()
-                    elif event.key == pygame.K_l:
-                        self.send_message({'type': 'get_leaderboard'})
-                        self.game_state = GameState.LEADERBOARD
-                    elif event.key == pygame.K_BACKSPACE:
-                        self.input_name = self.input_name[:-1]
-                    elif event.unicode.isprintable():
-                        if len(self.input_name) < 20:
-                            self.input_name += event.unicode
+            if key == arcade.key.RETURN:
+                if self.connect_to_server():
+                    self.start_game()
+            elif key == arcade.key.L:
+                self.send_message({'type': 'get_leaderboard'})
+                self.game_state = GameState.LEADERBOARD
+            elif key == arcade.key.BACKSPACE:
+                if self.input_mode == "ip":
+                    self.input_server_ip = self.input_server_ip[:-1]
+                else:
+                    self.input_name = self.input_name[:-1]
+            elif key >= arcade.key.KEY_0 and key <= arcade.key.KEY_9:
+                if self.input_mode == "ip":
+                    if len(self.input_server_ip) < 15:
+                        self.input_server_ip += chr(key)
+            elif key == arcade.key.PERIOD:
+                if self.input_mode == "ip":
+                    self.input_server_ip += "."
+            elif key == arcade.key.TAB:
+                self.input_mode = "name" if self.input_mode == "ip" else "ip"
+            elif key >= 32 and key <= 126:  # Printable ASCII
+                if self.input_mode == "name" and len(self.input_name) < 20:
+                    self.input_name += chr(key)
         
         elif self.game_state == GameState.PLAYING:
-            if self.game_active:
-                self.game_time += 1
-                
-                keys = pygame.key.get_pressed()
-                self.player.update(keys)
-                
-                # Get mouse angle
-                mouse_x, mouse_y = pygame.mouse.get_pos()
-                dx = mouse_x - (self.player.x + 10)
-                dy = mouse_y - (self.player.y + 15)
-                self.player.angle = math.degrees(math.atan2(dy, dx))
-                
-                # Update targets
-                for target in self.targets[:]:
-                    target.update()
-                
-                # Update bullets
-                for bullet in self.bullets[:]:
-                    if not bullet.update():
-                        self.bullets.remove(bullet)
-                    else:
-                        # Check collision with targets
-                        for target in self.targets[:]:
-                            dist = math.hypot(bullet.x - target.x, bullet.y - target.y)
-                            if dist < target.radius + bullet.radius:
-                                self.player.score += 10
-                                self.player.kills += 1
-                                self.player.shots_hit += 1
-                                self.targets.remove(target)
-                                self.bullets.remove(bullet)
-                                
-                                # Spawn new target
-                                x = random.randint(50, self.width - 50)
-                                y = random.randint(50, self.height - 50)
-                                self.targets.append(Target(x, y))
-                                break
-                
-                # Boundary check for player
-                self.player.x = max(0, min(self.width - self.player.width, self.player.x))
-                self.player.y = max(0, min(self.height - self.player.height, self.player.y))
-                
-                # Check game end
-                if self.game_time >= self.game_duration * 60:
-                    self.game_active = False
-                    self.game_state = GameState.GAME_OVER
-                    self.send_message({
-                        'type': 'update_score',
-                        'player_id': self.player_id,
-                        'score': self.player.score,
-                        'kills': self.player.kills,
-                        'accuracy': (self.player.shots_hit / max(1, self.player.shots_fired)) * 100
-                    })
-            
-            for event in events:
-                if event.type == pygame.MOUSEBUTTONDOWN:
-                    if event.button == 1:  # Left click
-                        bullet = Bullet(self.player.x + 10, self.player.y + 15, self.player.angle)
-                        self.bullets.append(bullet)
-                        self.player.shots_fired += 1
-                
-                if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        self.game_active = False
-                        self.game_state = GameState.MENU
+            if key == arcade.key.ESCAPE:
+                self.game_active = False
+                self.game_state = GameState.MENU
         
         elif self.game_state == GameState.LEADERBOARD:
-            for event in events:
-                if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_m or event.key == pygame.K_ESCAPE:
-                        self.game_state = GameState.MENU
+            if key == arcade.key.M or key == arcade.key.ESCAPE:
+                self.game_state = GameState.MENU
         
         elif self.game_state == GameState.GAME_OVER:
-            for event in events:
-                if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_RETURN:
-                        self.game_state = GameState.MENU
-                        self.input_name = ""
+            if key == arcade.key.RETURN:
+                self.game_state = GameState.MENU
+                self.input_name = ""
 
-    def run(self):
-        running = True
-        while running:
-            events = pygame.event.get()
-            for event in events:
-                if event.type == pygame.QUIT:
-                    running = False
-            
-            self.update(events)
-            
-            if self.game_state == GameState.MENU:
-                self.draw_menu()
-            elif self.game_state == GameState.PLAYING:
-                self.draw_game()
-            elif self.game_state == GameState.LEADERBOARD:
-                self.draw_leaderboard()
-            elif self.game_state == GameState.GAME_OVER:
-                self.draw_game_over()
-            
-            pygame.display.flip()
-            self.clock.tick(60)
+    def on_mouse_motion(self, x, y, dx, dy):
+        self.mouse_x = x
+        self.mouse_y = y
         
-        pygame.quit()
-        if self.socket:
-            self.socket.close()
+        if self.game_state == GameState.PLAYING:
+            # Calculate head angles based on mouse position
+            center_x = self.width // 2
+            center_y = self.height // 2
+            
+            # Pitch (up/down)
+            mouse_y_offset = y - center_y
+            self.player.pitch = max(-80, min(80, mouse_y_offset / 10))
+            
+            # Yaw (left/right)
+            mouse_x_offset = x - center_x
+            self.player.yaw = mouse_x_offset / 10
+
+    def on_mouse_press(self, x, y, button, modifiers):
+        if self.game_state == GameState.PLAYING and button == arcade.MOUSE_BUTTON_LEFT:
+            # Fire bullet from player's head level
+            bullet = Bullet(
+                self.player.x,
+                self.player.y + self.player.head_height,
+                self.player.z,
+                self.player.pitch,
+                self.player.yaw
+            )
+            self.bullets.append(bullet)
+            self.player.shots_fired += 1
+
+    def on_update(self, delta_time):
+        if self.game_state == GameState.PLAYING and self.game_active:
+            self.game_time += 1
+            
+            # Get keys
+            keys = arcade.key.key_is_pressed
+            key_list = arcade.key.key_list
+            
+            self.player.update(key_list)
+            
+            # Boundary check
+            self.player.x = max(5, min(self.arena_width - 5, self.player.x))
+            self.player.z = max(10, min(self.arena_depth - 10, self.player.z))
+            self.player.y = max(0, self.player.y)
+            
+            # Update targets
+            for target in self.targets[:]:
+                target.update(self.arena_width, self.arena_height, self.arena_depth)
+            
+            # Update bullets
+            for bullet in self.bullets[:]:
+                if not bullet.update():
+                    self.bullets.remove(bullet)
+                else:
+                    # Check collision with targets
+                    for target in self.targets[:]:
+                        if bullet.distance_to(target) < 8:
+                            self.player.score += 10
+                            self.player.kills += 1
+                            self.player.shots_hit += 1
+                            self.targets.remove(target)
+                            if bullet in self.bullets:
+                                self.bullets.remove(bullet)
+                            
+                            # Spawn new target
+                            x = random.randint(20, self.arena_width - 20)
+                            y = random.randint(5, 30)
+                            z = random.randint(20, self.arena_depth - 20)
+                            self.targets.append(StickFigureTarget(x, y, z))
+                            break
+            
+            # Check game end
+            if self.game_time >= self.game_duration * 60:
+                self.game_active = False
+                self.game_state = GameState.GAME_OVER
+                self.send_message({
+                    'type': 'update_score',
+                    'player_id': self.player_id,
+                    'score': self.player.score,
+                    'kills': self.player.kills,
+                    'accuracy': (self.player.shots_hit / max(1, self.player.shots_fired)) * 100
+                })
 
 if __name__ == '__main__':
     import sys
     server_ip = sys.argv[1] if len(sys.argv) > 1 else 'localhost'
-    client = GameClient(server_ip=server_ip)
-    client.run()
+    app = GameClient(server_ip=server_ip)
+    app.run()
